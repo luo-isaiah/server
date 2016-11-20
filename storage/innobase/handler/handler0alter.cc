@@ -801,7 +801,6 @@ ha_innobase::check_if_supported_inplace_alter(
 		           | Alter_inplace_info::ALTER_VIRTUAL_GCOL_EXPR
 		           | Alter_inplace_info::ALTER_COLUMN_VCOL
 		/*
-			   | Alter_inplace_info::ALTER_STORED_COLUMN_ORDER
 			   | Alter_inplace_info::ADD_STORED_BASE_COLUMN
 			   | Alter_inplace_info::DROP_STORED_COLUMN
 			   | Alter_inplace_info::ALTER_STORED_COLUMN_ORDER
@@ -1816,7 +1815,9 @@ null_field:
 }
 
 /*************************************************************//**
-Copies an InnoDB index entry to table->record[0]. */
+Copies an InnoDB index entry to table->record[0].
+This is used in preparation for print_keydup_error() from
+inline add index */
 void
 innobase_fields_to_mysql(
 /*=====================*/
@@ -1871,7 +1872,9 @@ innobase_fields_to_mysql(
 }
 
 /*************************************************************//**
-Copies an InnoDB row to table->record[0]. */
+Copies an InnoDB row to table->record[0].
+This is used in preparation for print_keydup_error() from
+row_log_table_apply() */
 void
 innobase_row_to_mysql(
 /*==================*/
@@ -1913,6 +1916,11 @@ innobase_row_to_mysql(
 				dfield_get_len(df), field);
 		}
 	}
+        if (table->vfield) {
+                my_bitmap_map *old_vcol_set=tmp_use_all_columns(table, table->vcol_set);
+                table->update_virtual_fields(VCOL_UPDATE_FOR_READ_WRITE);
+                tmp_restore_column_map(table->vcol_set, old_vcol_set);
+        }
 }
 
 /*************************************************************//**
@@ -3676,7 +3684,7 @@ prepare_inplace_add_virtual(
 				charset_no += MAX_CHAR_COLL_NUM;);
 
 			if (charset_no > MAX_CHAR_COLL_NUM) {
-				my_error(ER_WRONG_KEY_COLUMN, MYF(0),
+				my_error(ER_WRONG_KEY_COLUMN, MYF(0), "InnoDB",
 					 field->field_name);
 				return(true);
 			}
@@ -3794,7 +3802,7 @@ prepare_inplace_drop_virtual(
 				charset_no += MAX_CHAR_COLL_NUM;);
 
 			if (charset_no > MAX_CHAR_COLL_NUM) {
-				my_error(ER_WRONG_KEY_COLUMN, MYF(0),
+				my_error(ER_WRONG_KEY_COLUMN, MYF(0), "InnoDB",
 					 field->field_name);
 				return(true);
 			}
@@ -4653,7 +4661,7 @@ prepare_inplace_alter_table_dict(
 				if (charset_no > MAX_CHAR_COLL_NUM) {
 					dict_mem_table_free(
 						ctx->new_table);
-					my_error(ER_WRONG_KEY_COLUMN, MYF(0),
+					my_error(ER_WRONG_KEY_COLUMN, MYF(0), "InnoDB",
 						 field->field_name);
 					goto new_clustered_failed;
 				}
@@ -5645,6 +5653,12 @@ ha_innobase::prepare_inplace_alter_table(
 
 	info.set_tablespace_type(is_file_per_table);
 
+	if (ha_alter_info->handler_flags & Alter_inplace_info::ADD_INDEX) {
+                if (info.gcols_in_fulltest_or_spatial()) {
+                        goto err_exit_no_heap;
+                }
+        }
+
 	if (ha_alter_info->handler_flags
 	    & Alter_inplace_info::CHANGE_CREATE_OPTION) {
 		const char* invalid_opt = info.create_options_are_invalid();
@@ -6445,10 +6459,9 @@ ok_exit:
 			old_templ = ctx->new_table->vc_templ;
 		}
 		s_templ = UT_NEW_NOKEY(dict_vcol_templ_t());
-		s_templ->vtempl = NULL;
 
 		innobase_build_v_templ(
-			altered_table->s, ctx->new_table, s_templ, NULL, false);
+			altered_table, ctx->new_table, s_templ, NULL, false);
 
 		ctx->new_table->vc_templ = s_templ;
 	} else if (ctx->num_to_add_vcol > 0 && ctx->num_to_drop_vcol == 0) {
@@ -6465,10 +6478,8 @@ ok_exit:
 		add_v->v_col = ctx->add_vcol;
 		add_v->v_col_name = ctx->add_vcol_name;
 
-		s_templ->vtempl = NULL;
-
 		innobase_build_v_templ(
-			altered_table->s, ctx->new_table, s_templ, add_v, false);
+			altered_table, ctx->new_table, s_templ, add_v, false);
 		old_templ = ctx->new_table->vc_templ;
 		ctx->new_table->vc_templ = s_templ;
 	}
